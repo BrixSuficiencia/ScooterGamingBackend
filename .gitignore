@@ -1,2 +1,2 @@
 # Ignore service account key
-serviceAccountKey.json
+./serviceAccountKey.json
