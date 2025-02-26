@@ -90,54 +90,55 @@ app.post("/resend-verification", async (req, res) => {
 
 
 
-
-// 🔐 **Login (Supports Username or Email)**
+ // 🔐 **Login (Retrieve Full Account Information)**
 app.post("/login", async (req, res) => {
   try {
-    console.log("Login Attempt:", req.body); // Debugging
+    console.log("Login Attempt:", req.body);
 
     const { usernameOrEmail, password } = req.body;
 
-    // ✅ Validate required fields
-    if (!usernameOrEmail || !password) {
-      return res.status(400).json({ error: "Username/Email and password are required" });
-    }
-
-    let userDoc;
-    if (usernameOrEmail.includes("@")) {
-      // ✅ Login using email
-      const userRecord = await auth.getUserByEmail(usernameOrEmail);
-      userDoc = await usersRef.doc(userRecord.uid).get();
-    } else {
-      // ✅ Login using username
-      const usernameQuery = await usersRef.where("username", "==", usernameOrEmail).limit(1).get();
-      if (usernameQuery.empty) {
-        return res.status(401).json({ error: "Invalid username or password" });
+      if (!usernameOrEmail || !password) {
+        return res.status(400).json({ error: "Username/Email and password are required" });
       }
-      userDoc = usernameQuery.docs[0];
-    }
 
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: "User not found in database" });
-    }
+      let userDoc;
+      let userRecord;
 
-    const userData = userDoc.data();
+      if (usernameOrEmail.includes("@")) {
+        userRecord = await auth.getUserByEmail(usernameOrEmail);
+        userDoc = await usersRef.doc(userRecord.uid).get();
+      } else {
+        const usernameQuery = await usersRef.where("username", "==", usernameOrEmail).limit(1).get();
+        if (usernameQuery.empty) {
+          return res.status(401).json({ error: "Invalid username or password" });
+        }
+        userDoc = usernameQuery.docs[0]; // Retrieve the user document
+        userRecord = { uid: userDoc.id, ...userDoc.data() }; // Set user UID manually
+      }
 
-    // ✅ Check if email is verified
-    if (!userData.emailVerified) {
-      return res.status(403).json({ error: "Email not verified. Please verify your email first." });
-    }
+      if (!userDoc.exists) {
+        return res.status(404).json({ error: "User not found in database" });
+      }
+
+      const userData = userDoc.data();
+
+      if (!userData.emailVerified) {
+        return res.status(403).json({ error: "Email not verified. Please verify your email first." });
+      }
 
     res.json({
       message: "Login successful",
       user: {
-        uid: userData.uid,
+        uid: userRecord.uid,
         username: userData.username,
         email: userData.email,
         firstName: userData.firstName,
         lastName: userData.lastName,
+        phone: userData.phone || "Not provided",
+        profileImage: userData.profileImage || null,
         createdAt: userData.createdAt,
         emailVerified: userData.emailVerified,
+        rides: userData.rides || 0,
       },
     });
 
@@ -147,10 +148,7 @@ app.post("/login", async (req, res) => {
   }
 });
 
-
-
-
-
+  
 // 🚗 Vehicle Collection Reference
 const vehiclesRef = db.collection("vehicles");
 
