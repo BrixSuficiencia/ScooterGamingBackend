@@ -9,5 +9,3 @@
 - Rename Downloaded file to serviceAccountKey.json
 - Move serviceAccountKey.json to Repo Main File
 - Run "node index.js" on Terminal
-
-const analytics = getAnalytics(app);
