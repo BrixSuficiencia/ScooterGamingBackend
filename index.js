@@ -1,10 +1,8 @@
-
 const express = require("express");
 const admin = require("firebase-admin");
 const cors = require("cors");
 require("dotenv").config();
 const fs = require("fs");
-
 
 // ✅ Load Firebase service account JSON securely
 const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -18,6 +16,8 @@ admin.initializeApp({
 const db = admin.firestore();
 const auth = admin.auth(); // ✅ Firebase Authentication
 const usersRef = db.collection("users");
+const vehiclesRef = db.collection("vehicles");
+const bookingsRef = db.collection("bookings");
 
 const app = express();
 app.use(cors()); // Enable CORS
@@ -87,58 +87,53 @@ app.post("/resend-verification", async (req, res) => {
   }
 });
 
-
-
-
- // 🔐 **Login (Retrieve Full Account Information)**
+// 🔐 **Login (Supports Username or Email)**
 app.post("/login", async (req, res) => {
   try {
-    console.log("Login Attempt:", req.body);
+    console.log("Login Attempt:", req.body); // Debugging
 
     const { usernameOrEmail, password } = req.body;
 
-      if (!usernameOrEmail || !password) {
-        return res.status(400).json({ error: "Username/Email and password are required" });
+    // ✅ Validate required fields
+    if (!usernameOrEmail || !password) {
+      return res.status(400).json({ error: "Username/Email and password are required" });
+    }
+
+    let userDoc;
+    if (usernameOrEmail.includes("@")) {
+      // ✅ Login using email
+      const userRecord = await auth.getUserByEmail(usernameOrEmail);
+      userDoc = await usersRef.doc(userRecord.uid).get();
+    } else {
+      // ✅ Login using username
+      const usernameQuery = await usersRef.where("username", "==", usernameOrEmail).limit(1).get();
+      if (usernameQuery.empty) {
+        return res.status(401).json({ error: "Invalid username or password" });
       }
+      userDoc = usernameQuery.docs[0];
+    }
 
-      let userDoc;
-      let userRecord;
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: "User not found in database" });
+    }
 
-      if (usernameOrEmail.includes("@")) {
-        userRecord = await auth.getUserByEmail(usernameOrEmail);
-        userDoc = await usersRef.doc(userRecord.uid).get();
-      } else {
-        const usernameQuery = await usersRef.where("username", "==", usernameOrEmail).limit(1).get();
-        if (usernameQuery.empty) {
-          return res.status(401).json({ error: "Invalid username or password" });
-        }
-        userDoc = usernameQuery.docs[0]; // Retrieve the user document
-        userRecord = { uid: userDoc.id, ...userDoc.data() }; // Set user UID manually
-      }
+    const userData = userDoc.data();
 
-      if (!userDoc.exists) {
-        return res.status(404).json({ error: "User not found in database" });
-      }
-
-      const userData = userDoc.data();
-
-      if (!userData.emailVerified) {
-        return res.status(403).json({ error: "Email not verified. Please verify your email first." });
-      }
+    // ✅ Check if email is verified
+    if (!userData.emailVerified) {
+      return res.status(403).json({ error: "Email not verified. Please verify your email first." });
+    }
 
     res.json({
       message: "Login successful",
       user: {
-        uid: userRecord.uid,
+        uid: userData.uid,
         username: userData.username,
         email: userData.email,
         firstName: userData.firstName,
         lastName: userData.lastName,
-        phone: userData.phone || "Not provided",
-        profileImage: userData.profileImage || null,
         createdAt: userData.createdAt,
         emailVerified: userData.emailVerified,
-        rides: userData.rides || 0,
       },
     });
 
@@ -148,99 +143,76 @@ app.post("/login", async (req, res) => {
   }
 });
 
-  
-// 🚗 Vehicle Collection Reference
-const vehiclesRef = db.collection("vehicles");
+// 🚀 **Vehicle Routes**
+app.post("/vehicles/add", async (req, res) => {
+  try {
+    const { ownerId, images, name, plateNumber, model, fuelType, pricePerDay, location } = req.body;
+    if (!ownerId || !images || images.length !== 4 || !name || !plateNumber || !model || !fuelType || !pricePerDay || !location) {
+      return res.status(400).json({ error: "All fields are required, including 4 images." });
+    }
+    const vehicleData = {
+      ownerId,
+      images,
+      name,
+      plateNumber,
+      model,
+      fuelType,
+      pricePerDay,
+      location,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    const newVehicle = await vehiclesRef.add(vehicleData);
+    res.status(201).json({ message: "Vehicle added successfully", vehicleId: newVehicle.id });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
-// 🟢 GET all vehicles
 app.get("/vehicles", async (req, res) => {
   try {
-    console.log("Fetching vehicles from Firestore...");
-    const snapshot = await vehiclesRef.get();
-
-    if (snapshot.empty) {
-      console.log("No vehicles found!");
-      return res.status(404).json({ error: "No vehicles available" });
-    }
-
-    const vehicles = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-    console.log("Vehicles found:", vehicles); // 🔍 Log fetched vehicles
+    const vehiclesSnapshot = await vehiclesRef.get();
+    const vehicles = vehiclesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     res.json(vehicles);
   } catch (error) {
-    console.error("Error fetching vehicles:", error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
-
-// 🟢 GET a single vehicle by ID
-app.get("/vehicles/:id", async (req, res) => {
-  try {
-    const vehicleDoc = await vehiclesRef.doc(req.params.id).get();
-    if (!vehicleDoc.exists) return res.status(404).json({ error: "Vehicle not found" });
-
-    res.json({ id: vehicleDoc.id, ...vehicleDoc.data() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 🔵 POST (Add a new vehicle)
-app.post("/vehicles", async (req, res) => {
-  try {
-    const { name, type, price, location } = req.body;
-    const newVehicle = await vehiclesRef.add({ name, type, price, location, available: true });
-    res.status(201).json({ id: newVehicle.id, message: "Vehicle added successfully" });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 🟠 UPDATE a vehicle
-app.put("/vehicles/:id", async (req, res) => {
-  try {
-    await vehiclesRef.doc(req.params.id).update(req.body);
-    res.json({ message: "Vehicle updated successfully" });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 🔴 DELETE a vehicle
-app.delete("/vehicles/:id", async (req, res) => {
-  try {
-    await vehiclesRef.doc(req.params.id).delete();
-    res.json({ message: "Vehicle deleted successfully" });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 🚘 Booking a Vehicle
+// 🚀 **Booking Routes**
 app.post("/bookings", async (req, res) => {
   try {
-    const { userId, vehicleId, startDate, endDate } = req.body;
-
-    const vehicleRef = vehiclesRef.doc(vehicleId);
-    const vehicle = await vehicleRef.get();
-
-    if (!vehicle.exists || !vehicle.data().available) {
-      return res.status(400).json({ error: "Vehicle is not available" });
+    const { renterId, vehicleId, pickupDate, returnDate } = req.body;
+    if (!renterId || !vehicleId || !pickupDate || !returnDate) {
+      return res.status(400).json({ error: "All fields are required." });
     }
 
-    // Create a booking
-    const bookingRef = db.collection("bookings").doc();
-    await bookingRef.set({ userId, vehicleId, startDate, endDate });
+    const pickup = new Date(pickupDate);
+    const returnD = new Date(returnDate);
+    const duration = Math.ceil((returnD - pickup) / (1000 * 60 * 60 * 24)); // Convert to days
 
-    // Update vehicle availability
-    await vehicleRef.update({ available: false });
+    const vehicleDoc = await vehiclesRef.doc(vehicleId).get();
+    if (!vehicleDoc.exists) {
+      return res.status(404).json({ error: "Vehicle not found" });
+    }
 
-    res.json({ message: "Booking confirmed", bookingId: bookingRef.id });
+    const pricePerDay = vehicleDoc.data().pricePerDay;
+    const totalPrice = duration * pricePerDay;
+
+    const bookingData = {
+      renterId,
+      vehicleId,
+      pickupDate: pickup,
+      returnDate: returnD,
+      totalPrice,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    
+    const newBooking = await bookingsRef.add(bookingData);
+    res.status(201).json({ message: "Booking created successfully", bookingId: newBooking.id, totalPrice });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-  // Start Server
-  const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
